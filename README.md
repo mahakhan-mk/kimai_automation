@@ -6,7 +6,7 @@ A small, intentionally conservative importer for the Octans Kimai instance.
 
 - Default execution is **dry-run**. It performs lookups and validation but does not create timesheets.
 - Writes require an explicit `--commit` flag.
-- Use `--limit 1 --commit` for the first real API test.
+- Inspect the live API before considering any write; the inspection workflow is strictly read-only.
 - The token is read only from `.env` and `.env` is gitignored.
 - The script only uses Kimai JSON API endpoints. It does not automate browser clicks and does not alter Kimai infrastructure/configuration.
 
@@ -74,7 +74,23 @@ JSON:
 
 Times are sent as Kimai HTML5 local datetime strings such as `2026-09-03T09:00:00`. No timezone offset is added.
 
-## 5. Dry-run
+## 5. Inspect the live API
+
+Run this before preparing or committing any import:
+
+```powershell
+python inspect_kimai.py
+```
+
+Optional timesheet filters can narrow the inspection:
+
+```powershell
+python inspect_kimai.py --project-id 59 --begin 2026-01-01T00:00:00 --end 2026-01-31T23:59:59
+```
+
+The script reads the Kimai version, resolves the configured project, lists its activities and available tags, and prints a small sample of readable timesheets. It performs GET requests only.
+
+## 6. Dry-run
 
 ```powershell
 python import_timesheets.py sample_timesheets.csv
@@ -82,17 +98,17 @@ python import_timesheets.py sample_timesheets.csv
 
 This creates `import_report.json`, but writes nothing to Kimai.
 
-## 6. First real test
+## 7. Explicit commit
 
-After reviewing the dry-run:
+Only after reviewing the inspection output and dry-run, and separately deciding that a write is appropriate:
 
 ```powershell
 python import_timesheets.py sample_timesheets.csv --limit 1 --commit
 ```
 
-Verify the resulting single entry in the Kimai UI before any bulk import.
+Do not use this or any other commit command during inspection/development. Verify any deliberately created entry in the Kimai UI before considering a bulk import.
 
-## 7. Bulk import
+## 8. Bulk import
 
 Only after the one-entry test succeeds:
 

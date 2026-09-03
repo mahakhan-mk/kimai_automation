@@ -111,6 +111,21 @@ def exact_by_name(items: list[dict[str, Any]], name: str, kind: str) -> dict[str
     return matches[0]
 
 
+def build_timesheet_payload(row: InputRow, project_id: int, activity_id: int) -> dict[str, Any]:
+    """Build the Kimai 2.65.0 timesheet payload without invalid tag arrays."""
+    payload: dict[str, Any] = {
+        "begin": row.begin,
+        "end": row.finish,
+        "project": project_id,
+        "activity": activity_id,
+        "description": row.description,
+    }
+    if row.tags:
+        # Kimai's API form maps this field from a comma-separated string.
+        payload["tags"] = ",".join(row.tags)
+    return payload
+
+
 def resolve_project(client: KimaiClient, customer_name: str, project_name: str) -> tuple[int, int]:
     customer = exact_by_name(client.customers(), customer_name, "customer")
     customer_id = int(customer["id"])
@@ -150,14 +165,7 @@ def main() -> int:
 
             report: list[dict[str, Any]] = []
             for number, row in enumerate(rows, start=1):
-                payload: dict[str, Any] = {
-                    "begin": row.begin,
-                    "end": row.finish,
-                    "project": project_id,
-                    "activity": activity_ids[row.activity],
-                    "description": row.description,
-                    "tags": row.tags,
-                }
+                payload = build_timesheet_payload(row, project_id, activity_ids[row.activity])
                 print(f"[{number}] {row.begin} -> {row.finish} | {row.activity} | {row.description}")
                 if args.commit:
                     created = client.create_timesheet(payload)

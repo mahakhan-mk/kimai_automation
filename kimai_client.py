@@ -43,7 +43,10 @@ class KimaiClient:
         self.close()
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        response = self.client.request(method, path, **kwargs)
+        try:
+            response = self.client.request(method, path, **kwargs)
+        except httpx.HTTPError as exc:
+            raise KimaiError(f"{method} {path} failed: {exc}") from exc
         if response.status_code >= 400:
             body = response.text[:1000]
             raise KimaiError(f"{method} {path} failed: HTTP {response.status_code}: {body}")
@@ -69,15 +72,37 @@ class KimaiClient:
         return list(data or [])
 
     def activities(self, project_id: int | None = None) -> list[dict[str, Any]]:
-        params: list[tuple[str, str]] = []
+        params: dict[str, str] = {}
         if project_id is not None:
-            # Kimai v2 collection filters accept arrays. Repeated query keys are portable.
-            params.append(("projects[]", str(project_id)))
+            params["project"] = str(project_id)
         data = self._request("GET", "/activities", params=params or None)
         return list(data or [])
 
-    def timesheets(self, begin: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
+    def tags_find(self, name: str | None = "") -> list[dict[str, Any]]:
+        """Return full tag entities from GET /tags/find.
+
+        Kimai returns no results when the optional search term is omitted on
+        some 2.x versions, so the default empty search term requests all tags.
+        """
         params: dict[str, str] = {}
+        if name is not None:
+            params["name"] = name
+        data = self._request("GET", "/tags/find", params=params or None)
+        return list(data or [])
+
+    def tags(self, name: str | None = "") -> list[dict[str, Any]]:
+        """Compatibility alias for the full tag lookup endpoint."""
+        return self.tags_find(name)
+
+    def timesheets(
+        self,
+        begin: str | None = None,
+        end: str | None = None,
+        project_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, str] = {}
+        if project_id is not None:
+            params["project"] = str(project_id)
         if begin:
             params["begin"] = begin
         if end:
