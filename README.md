@@ -21,9 +21,9 @@ KIMAI_API_TOKEN=PASTE_YOUR_TOKEN_HERE
 The current defaults are already set to:
 
 ```text
-KIMAI_BASE_URL=https://octans-digital.kimai.cloud
-KIMAI_CUSTOMER_NAME=KPMG-Canada
-KIMAI_PROJECT_NAME=KPMG-Agentic SAR workflow automation-Stage-1
+KIMAI_BASE_URL=https://example.kimai.cloud
+KIMAI_CUSTOMER_NAME=ABC
+KIMAI_PROJECT_NAME=workflow automation-Stage-1
 ```
 
 Do not share or commit `.env`.
