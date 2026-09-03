@@ -71,6 +71,12 @@ class KimaiClient:
         data = self._request("GET", "/projects")
         return list(data or [])
 
+    def user_me(self) -> dict[str, Any]:
+        data = self._request("GET", "/users/me")
+        if not isinstance(data, dict):
+            raise KimaiError("GET /users/me did not return a JSON object")
+        return data
+
     def activities(self, project_id: int | None = None) -> list[dict[str, Any]]:
         params: dict[str, str] = {}
         if project_id is not None:
@@ -99,6 +105,9 @@ class KimaiClient:
         begin: str | None = None,
         end: str | None = None,
         project_id: int | None = None,
+        size: int | None = None,
+        order_by: str | None = None,
+        order: str | None = None,
     ) -> list[dict[str, Any]]:
         params: dict[str, str] = {}
         if project_id is not None:
@@ -107,6 +116,12 @@ class KimaiClient:
             params["begin"] = begin
         if end:
             params["end"] = end
+        if size is not None:
+            params["size"] = str(size)
+        if order_by:
+            params["orderBy"] = order_by
+        if order:
+            params["order"] = order
         data = self._request("GET", "/timesheets", params=params or None)
         return list(data or [])
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import Mock
@@ -43,6 +44,24 @@ class KimaiClientReadTests(unittest.TestCase):
                 "begin": "2026-01-01T00:00:00",
                 "end": "2026-01-31T23:59:59",
             },
+        )
+
+    def test_user_me_uses_get(self) -> None:
+        self.client._request = Mock(return_value={"id": 3, "username": "alice"})
+
+        self.assertEqual(self.client.user_me(), {"id": 3, "username": "alice"})
+
+        self.client._request.assert_called_once_with("GET", "/users/me")
+
+    def test_all_project_timesheets_have_no_project_filter(self) -> None:
+        self.client._request = Mock(return_value=[])
+
+        self.client.timesheets(size=10, order_by="begin", order="DESC")
+
+        self.client._request.assert_called_once_with(
+            "GET",
+            "/timesheets",
+            params={"size": "10", "orderBy": "begin", "order": "DESC"},
         )
 
     def test_tags_find_uses_get(self) -> None:
@@ -95,6 +114,10 @@ class ReadOnlyInspectionTests(unittest.TestCase):
                 self.calls.append("version")
                 return {"version": "2.65.0"}
 
+            def user_me(self):
+                self.calls.append("user_me")
+                return {"id": 3, "username": "alice"}
+
             def customers(self):
                 self.calls.append("customers")
                 return [{"id": 4, "name": "KPMG-Canada"}]
@@ -131,6 +154,7 @@ class ReadOnlyInspectionTests(unittest.TestCase):
             client.calls,
             [
                 "version",
+                "user_me",
                 "customers",
                 "projects",
                 "activities:59",
@@ -140,9 +164,72 @@ class ReadOnlyInspectionTests(unittest.TestCase):
         )
         rendered = output.getvalue()
         self.assertIn("Kimai version: 2.65.0", rendered)
+        self.assertIn("Current user: id=3 | username=alice", rendered)
         self.assertIn("id=7 | name=Coding", rendered)
         self.assertIn("id=100", rendered)
         self.assertNotIn("POST", rendered)
+
+    def test_all_projects_uses_latest_current_user_timesheets_and_raw_is_first_only(self) -> None:
+        class FakeAllProjectsClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, object]] = []
+
+            def version(self):
+                self.calls.append(("version", None))
+                return {"version": "2.65.0"}
+
+            def user_me(self):
+                self.calls.append(("user_me", None))
+                return {"id": 3, "username": "alice"}
+
+            def tags_find(self, name=""):
+                self.calls.append(("tags_find", name))
+                return [{"id": 2, "name": "remote"}, {"id": 4, "name": "client"}]
+
+            def timesheets(self, begin=None, end=None, project_id=None, size=None, order_by=None, order=None):
+                self.calls.append(("timesheets", {
+                    "begin": begin,
+                    "end": end,
+                    "project_id": project_id,
+                    "size": size,
+                    "order_by": order_by,
+                    "order": order,
+                }))
+                return [
+                    {"id": 10, "begin": "2026-09-03T09:00:00+00:00", "description": "latest"},
+                    {"id": 9, "begin": "2026-09-02T09:00:00+00:00", "description": "older"},
+                ]
+
+        client = FakeAllProjectsClient()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            inspect_api(client, "Configured project", "KPMG-Canada", all_projects=True, raw_timesheet=True)
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("version", None),
+                ("user_me", None),
+                ("tags_find", ""),
+                ("timesheets", {
+                    "begin": None,
+                    "end": None,
+                    "project_id": None,
+                    "size": 10,
+                    "order_by": "begin",
+                    "order": "DESC",
+                }),
+            ],
+        )
+        rendered = output.getvalue()
+        self.assertIn("Project filter: none (all projects)", rendered)
+        self.assertIn("Available tags: 2", rendered)
+        self.assertNotIn("remote", rendered.split("Available tags:", 1)[1].split("Readable timesheet", 1)[0])
+        raw = json.loads(rendered.split("Raw first timesheet:\n", 1)[1])
+        self.assertEqual(raw, {"id": 10, "begin": "2026-09-03T09:00:00+00:00", "description": "latest"})
+        self.assertNotIn("POST", rendered)
+        self.assertNotIn("PATCH", rendered)
+        self.assertNotIn("DELETE", rendered)
 
 
 if __name__ == "__main__":

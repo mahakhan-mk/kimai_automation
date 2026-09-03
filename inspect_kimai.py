@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from typing import Any
@@ -92,38 +93,51 @@ def inspect_api(
     project_id: int | None = None,
     begin: str | None = None,
     end: str | None = None,
+    all_projects: bool = False,
+    raw_timesheet: bool = False,
 ) -> None:
     """Inspect Kimai using GET requests only; this function has no write path."""
     version = client.version()
-    customers = client.customers()
-    projects = client.projects()
-    project = resolve_project_record(projects, customers, project_name, customer_name, project_id)
-    resolved_project_id = int(project["id"])
-    activities = client.activities(project_id=resolved_project_id)
+    user = client.user_me()
 
     print(f"Kimai version: {_version_label(version)}")
-    print(f"Resolved project: {_label(project)}")
-    print("\nActivities available for this project:")
-    if activities:
-        for activity in activities:
-            print(f"  - id={activity.get('id', '?')} | name={activity.get('name', '')}")
+    print(f"Current user: id={user.get('id', '?')} | username={user.get('username', '?')}")
+
+    resolved_project_id: int | None = None
+    if all_projects:
+        print("Project filter: none (all projects)")
+        print("\nActivities available for this project: skipped in --all-projects mode")
     else:
-        print("  (none returned)")
+        customers = client.customers()
+        projects = client.projects()
+        project = resolve_project_record(projects, customers, project_name, customer_name, project_id)
+        resolved_project_id = int(project["id"])
+        activities = client.activities(project_id=resolved_project_id)
+        print(f"Resolved project: {_label(project)}")
+        print("\nActivities available for this project:")
+        if activities:
+            for activity in activities:
+                print(f"  - id={activity.get('id', '?')} | name={activity.get('name', '')}")
+        else:
+            print("  (none returned)")
 
     try:
         tags = client.tags_find("")
     except KimaiError as exc:
-        tags = []
         print(f"\nAvailable tags: unavailable ({exc})")
     else:
-        print("\nAvailable tags:")
-        if tags:
-            for tag in tags:
-                print(f"  - {_label(tag)}")
-        else:
-            print("  (none returned)")
+        print(f"\nAvailable tags: {len(tags)}")
 
-    timesheets = client.timesheets(project_id=resolved_project_id, begin=begin, end=end)
+    if all_projects:
+        timesheets = client.timesheets(
+            begin=begin,
+            end=end,
+            size=10,
+            order_by="begin",
+            order="DESC",
+        )
+    else:
+        timesheets = client.timesheets(project_id=resolved_project_id, begin=begin, end=end)
     sample = timesheets[:10]
     filter_text = []
     if begin:
@@ -146,18 +160,41 @@ def inspect_api(
     else:
         print("  (none returned)")
 
+    if raw_timesheet and timesheets:
+        print("\nRaw first timesheet:")
+        print(json.dumps(timesheets[0], indent=2, ensure_ascii=False))
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only inspection of the configured Kimai API")
     parser.add_argument("--project-id", type=int, help="Inspect this project ID instead of resolving by name")
     parser.add_argument("--begin", help="Timesheet filter, YYYY-MM-DDTHH:MM:SS")
     parser.add_argument("--end", help="Timesheet filter, YYYY-MM-DDTHH:MM:SS")
+    parser.add_argument(
+        "--all-projects",
+        action="store_true",
+        help="Inspect the latest current-user timesheets across all projects",
+    )
+    parser.add_argument(
+        "--raw-timesheet",
+        action="store_true",
+        help="Pretty-print the complete first returned timesheet JSON",
+    )
     args = parser.parse_args()
 
     try:
         config, customer_name, project_name = load_inspection_config()
         with KimaiClient(config) as client:
-            inspect_api(client, project_name, customer_name, args.project_id, args.begin, args.end)
+            inspect_api(
+                client,
+                project_name,
+                customer_name,
+                args.project_id,
+                args.begin,
+                args.end,
+                args.all_projects,
+                args.raw_timesheet,
+            )
         return 0
     except (ValueError, KimaiError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
