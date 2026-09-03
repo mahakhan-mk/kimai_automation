@@ -105,6 +105,7 @@ class KimaiClient:
         begin: str | None = None,
         end: str | None = None,
         project_id: int | None = None,
+        page: int | None = None,
         size: int | None = None,
         order_by: str | None = None,
         order: str | None = None,
@@ -112,6 +113,8 @@ class KimaiClient:
         params: dict[str, str] = {}
         if project_id is not None:
             params["project"] = str(project_id)
+        if page is not None:
+            params["page"] = str(page)
         if begin:
             params["begin"] = begin
         if end:
@@ -124,6 +127,36 @@ class KimaiClient:
             params["order"] = order
         data = self._request("GET", "/timesheets", params=params or None)
         return list(data or [])
+
+    def all_timesheets(
+        self,
+        begin: str | None = None,
+        end: str | None = None,
+        max_pages: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Fetch every current-user timesheet in a date range.
+
+        The endpoint defaults to 50 records, so preflight uses its maximum
+        page size and walks pages without a project filter. The page guard
+        prevents an unexpectedly repeating API response from looping forever.
+        """
+        if max_pages < 1:
+            raise ValueError("max_pages must be at least 1")
+
+        records: list[dict[str, Any]] = []
+        for page in range(1, max_pages + 1):
+            current_page = self.timesheets(
+                begin=begin,
+                end=end,
+                page=page,
+                size=500,
+            )
+            records.extend(current_page)
+            if len(current_page) < 500:
+                return records
+        raise KimaiError(
+            f"GET /timesheets pagination exceeded the maximum of {max_pages} pages"
+        )
 
     def create_timesheet(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._request("POST", "/timesheets", json=payload)

@@ -6,6 +6,7 @@ A small, intentionally conservative importer for the Octans Kimai instance.
 
 - Default execution is **dry-run**. It performs lookups and validation but does not create timesheets.
 - Writes require an explicit `--commit` flag.
+- Every run preflights the input against existing timesheets; `--commit` refuses the entire batch if any row is invalid, duplicated, or overlapping.
 - Inspect the live API before considering any write; the inspection workflow is strictly read-only.
 - The token is read only from `.env` and `.env` is gitignored.
 - The script only uses Kimai JSON API endpoints. It does not automate browser clicks and does not alter Kimai infrastructure/configuration.
@@ -97,6 +98,8 @@ python import_timesheets.py sample_timesheets.csv
 ```
 
 This creates `import_report.json`, but writes nothing to Kimai.
+
+The dry-run prints the minimal POST payload for each row and classifies it as `READY`, `DUPLICATE`, `CONFLICT`, or `INVALID`. Existing timesheets are checked without a project filter so overlapping work in another project also blocks the batch.
 
 ## 7. Explicit commit
 
