@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, call, patch
 
 import httpx
 
-from import_timesheets import InputRow, build_timesheet_payload, classify_rows, run_import
+from import_timesheets import (
+    InputRow,
+    build_timesheet_payload,
+    classify_rows,
+    run_import,
+    validate_expected_month,
+)
 from inspect_kimai import inspect_api
 from kimai_client import KimaiClient, KimaiConfig, KimaiError
 
@@ -353,6 +362,33 @@ class PreflightTests(unittest.TestCase):
 
         self.assertEqual(self.statuses(rows), ["INVALID"])
 
+    def test_expected_month_accepts_all_rows_in_month(self) -> None:
+        rows = [
+            InputRow("2026-08-01", "09:00", "10:00", "Coding", "first", []),
+            InputRow("2026-08-31", "11:00", "12:00", "Coding", "last", []),
+        ]
+
+        results = classify_rows(rows, 59, {"Coding": 7}, [], expected_month="2026-08")
+
+        self.assertEqual([result.status for result in results], ["READY", "READY"])
+
+    def test_expected_month_outside_row_is_invalid(self) -> None:
+        rows = [
+            InputRow("2026-08-31", "09:00", "10:00", "Coding", "valid", []),
+            InputRow("2026-09-01", "09:00", "10:00", "Coding", "outside", []),
+        ]
+
+        results = classify_rows(rows, 59, {"Coding": 7}, [], expected_month="2026-08")
+
+        self.assertEqual([result.status for result in results], ["READY", "INVALID"])
+
+    def test_invalid_expected_month_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "valid YYYY-MM"):
+            validate_expected_month("2026-13")
+
+        with self.assertRaisesRegex(ValueError, "YYYY-MM"):
+            validate_expected_month("2026-8")
+
 
 class ImportSafetyFlowTests(unittest.TestCase):
     class FakeImportClient:
@@ -372,10 +408,6 @@ class ImportSafetyFlowTests(unittest.TestCase):
             self.calls.append(("activities", project_id))
             return [{"id": 7, "name": "Coding"}]
 
-        def timesheets(self, begin=None, end=None, project_id=None):
-            self.calls.append(("timesheets", begin, end, project_id))
-            return self.existing
-
         def all_timesheets(self, begin=None, end=None):
             self.calls.append(("timesheets", begin, end, None))
             return self.existing
@@ -387,9 +419,9 @@ class ImportSafetyFlowTests(unittest.TestCase):
     def row(self, start="09:00", end="10:00"):
         return InputRow("2026-09-03", start, end, "Coding", "Work", [])
 
-    def execute(self, client, rows, commit=False):
-        with patch("import_timesheets.Path.write_text"):
-            return run_import(client, rows, "KPMG-Canada", "Target", commit)
+    def execute(self, client, rows, commit=False, expected_month=None, resume=False):
+        with patch("import_timesheets._write_report_atomic"):
+            return run_import(client, rows, "KPMG-Canada", "Target", commit, expected_month, resume)
 
     def test_commit_refuses_entire_batch_if_one_row_conflicts(self) -> None:
         client = self.FakeImportClient([{
@@ -401,6 +433,22 @@ class ImportSafetyFlowTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertFalse(any(call[0] == "create_timesheet" for call in client.calls if isinstance(call, tuple)))
+
+    def test_expected_month_blocks_entire_commit_batch(self) -> None:
+        client = self.FakeImportClient()
+
+        result = self.execute(
+            client,
+            [self.row(), InputRow("2026-10-01", "09:00", "10:00", "Coding", "outside", [])],
+            commit=True,
+            expected_month="2026-09",
+        )
+
+        self.assertEqual(result, 1)
+        self.assertFalse(any(
+            isinstance(call, tuple) and call[0] == "create_timesheet"
+            for call in client.calls
+        ))
 
     def test_dry_run_performs_no_write_methods(self) -> None:
         client = self.FakeImportClient()
@@ -424,6 +472,144 @@ class ImportSafetyFlowTests(unittest.TestCase):
         create_positions = [i for i, call in enumerate(client.calls) if isinstance(call, tuple) and call[0] == "create_timesheet"]
         self.assertEqual(len(create_positions), 2)
         self.assertGreater(create_positions[0], client.calls.index(("timesheets", "2026-09-02T00:00:00", "2026-09-03T12:00:00", None)))
+
+    def test_report_is_written_before_and_after_each_successful_post(self) -> None:
+        client = self.FakeImportClient()
+        reports = []
+
+        with patch("import_timesheets._write_report_atomic", side_effect=reports.append):
+            result = run_import(
+                client,
+                [self.row(), self.row("11:00", "12:00")],
+                "KPMG-Canada",
+                "Target",
+                commit=True,
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(reports), 3)
+        self.assertEqual(reports[0]["rows"][0]["status"], "READY")
+        self.assertEqual(reports[1]["rows"][0]["status"], "created")
+        self.assertEqual(reports[1]["rows"][0]["id"], 123)
+        self.assertEqual(reports[2]["rows"][1]["status"], "created")
+
+    def test_write_failure_persists_failure_and_stops_later_rows(self) -> None:
+        class FailingClient(self.FakeImportClient):
+            def create_timesheet(self, payload):
+                self.calls.append(("create_timesheet", payload))
+                if len([call for call in self.calls if isinstance(call, tuple) and call[0] == "create_timesheet"]) == 2:
+                    raise RuntimeError("simulated POST failure")
+                return {"id": 123}
+
+        client = FailingClient()
+        reports = []
+        with patch("import_timesheets._write_report_atomic", side_effect=reports.append):
+            result = run_import(
+                client,
+                [self.row(), self.row("11:00", "12:00"), self.row("13:00", "14:00")],
+                "KPMG-Canada",
+                "Target",
+                commit=True,
+            )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(len([call for call in client.calls if isinstance(call, tuple) and call[0] == "create_timesheet"]), 2)
+        failure_report = reports[-1]
+        self.assertEqual(failure_report["rows"][0]["status"], "created")
+        self.assertEqual(failure_report["rows"][0]["id"], 123)
+        self.assertEqual(failure_report["rows"][1]["status"], "FAILED")
+        self.assertIn("simulated POST failure", failure_report["rows"][1]["error"])
+        self.assertEqual(failure_report["rows"][2]["status"], "READY")
+
+    def test_resume_skips_confirmed_created_rows_and_continues_ready_rows(self) -> None:
+        class FirstRunClient(self.FakeImportClient):
+            def create_timesheet(self, payload):
+                self.calls.append(("create_timesheet", payload))
+                if len([call for call in self.calls if isinstance(call, tuple) and call[0] == "create_timesheet"]) == 2:
+                    raise RuntimeError("temporary failure")
+                return {"id": 123}
+
+        rows = [self.row(), self.row("11:00", "12:00")]
+        with TemporaryDirectory() as directory:
+            previous_directory = os.getcwd()
+            os.chdir(directory)
+            try:
+                first_client = FirstRunClient()
+                self.assertEqual(
+                    run_import(first_client, rows, "KPMG-Canada", "Target", commit=True),
+                    1,
+                )
+                first_report = json.loads(Path("import_report.json").read_text(encoding="utf-8"))
+                self.assertEqual(first_report["rows"][0]["status"], "created")
+
+                resume_client = self.FakeImportClient([{
+                    "id": 123,
+                    "begin": "2026-09-03T09:00:00+0500",
+                    "end": "2026-09-03T10:00:00+0500",
+                }])
+                self.assertEqual(
+                    run_import(
+                        resume_client,
+                        rows,
+                        "KPMG-Canada",
+                        "Target",
+                        commit=True,
+                        resume=True,
+                    ),
+                    0,
+                )
+                create_calls = [
+                    call for call in resume_client.calls
+                    if isinstance(call, tuple) and call[0] == "create_timesheet"
+                ]
+                self.assertEqual(len(create_calls), 1)
+                self.assertEqual(create_calls[0][1]["begin"], "2026-09-03T11:00:00")
+            finally:
+                os.chdir(previous_directory)
+
+    def test_resume_report_mismatch_blocks_without_post(self) -> None:
+        with TemporaryDirectory() as directory:
+            previous_directory = os.getcwd()
+            os.chdir(directory)
+            try:
+                rows = [self.row()]
+                self.assertEqual(run_import(self.FakeImportClient(), rows, "KPMG-Canada", "Target"), 0)
+                report = json.loads(Path("import_report.json").read_text(encoding="utf-8"))
+                report["input_fingerprint"] = "mismatch"
+                Path("import_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+                resume_client = self.FakeImportClient()
+                with self.assertRaisesRegex(KimaiError, "does not match"):
+                    run_import(resume_client, rows, "KPMG-Canada", "Target", commit=True, resume=True)
+                self.assertFalse(any(
+                    isinstance(call, tuple) and call[0] == "create_timesheet"
+                    for call in resume_client.calls
+                ))
+            finally:
+                os.chdir(previous_directory)
+
+    def test_arbitrary_existing_duplicate_is_not_already_created(self) -> None:
+        with TemporaryDirectory() as directory:
+            previous_directory = os.getcwd()
+            os.chdir(directory)
+            try:
+                rows = [self.row()]
+                self.assertEqual(run_import(self.FakeImportClient(), rows, "KPMG-Canada", "Target"), 0)
+                duplicate_client = self.FakeImportClient([{
+                    "id": 456,
+                    "begin": "2026-09-03T09:00:00+0500",
+                    "end": "2026-09-03T10:00:00+0500",
+                }])
+                self.assertEqual(
+                    run_import(duplicate_client, rows, "KPMG-Canada", "Target", commit=True, resume=True),
+                    1,
+                )
+                self.assertFalse(any(
+                    isinstance(call, tuple) and call[0] == "create_timesheet"
+                    for call in duplicate_client.calls
+                ))
+            finally:
+                os.chdir(previous_directory)
 
 
 if __name__ == "__main__":

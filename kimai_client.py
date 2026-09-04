@@ -105,10 +105,10 @@ class KimaiClient:
         begin: str | None = None,
         end: str | None = None,
         project_id: int | None = None,
-        page: int | None = None,
         size: int | None = None,
         order_by: str | None = None,
         order: str | None = None,
+        page: int | None = None,
     ) -> list[dict[str, Any]]:
         params: dict[str, str] = {}
         if project_id is not None:
@@ -157,6 +157,15 @@ class KimaiClient:
         raise KimaiError(
             f"GET /timesheets pagination exceeded the maximum of {max_pages} pages"
         )
+
+    def get_all_timesheets(
+        self,
+        begin: str | None = None,
+        end: str | None = None,
+        max_pages: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Compatibility alias for complete current-user retrieval."""
+        return self.all_timesheets(begin=begin, end=end, max_pages=max_pages)
 
     def create_timesheet(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._request("POST", "/timesheets", json=payload)

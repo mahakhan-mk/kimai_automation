@@ -94,30 +94,32 @@ The script reads the Kimai version, resolves the configured project, lists its a
 ## 6. Dry-run
 
 ```powershell
-python import_timesheets.py sample_timesheets.csv
+python import_timesheets.py data/2026-08.csv --expected-month 2026-08
 ```
 
 This creates `import_report.json`, but writes nothing to Kimai.
 
-The dry-run prints the minimal POST payload for each row and classifies it as `READY`, `DUPLICATE`, `CONFLICT`, or `INVALID`. Existing timesheets are checked without a project filter so overlapping work in another project also blocks the batch.
+The dry-run prints the minimal POST payload for each row and classifies it as `READY`, `DUPLICATE`, `CONFLICT`, or `INVALID`. Existing timesheets are checked across all projects, with complete pagination, so overlapping work in another project also blocks the batch. `--expected-month` is optional but recommended for month-by-month imports.
 
 ## 7. Explicit commit
 
-Only after reviewing the inspection output and dry-run, and separately deciding that a write is appropriate:
+Only after reviewing the inspection output and dry-run:
 
 ```powershell
-python import_timesheets.py sample_timesheets.csv --limit 1 --commit
+python import_timesheets.py data/2026-08.csv --expected-month 2026-08 --commit
 ```
 
-Do not use this or any other commit command during inspection/development. Verify any deliberately created entry in the Kimai UI before considering a bulk import.
+`--commit` is the only normal write path. It refuses the entire batch if any row is invalid, duplicated, or overlapping. The durable report is updated after each successful entry.
 
-## 8. Bulk import
+## 8. Resume after a partial failure
 
-Only after the one-entry test succeeds:
+Use `--resume` only after resolving the reported write failure:
 
 ```powershell
-python import_timesheets.py your_timesheets.csv --commit
+python import_timesheets.py data/2026-08.csv --expected-month 2026-08 --commit --resume
 ```
+
+The importer verifies that `import_report.json` matches the same input and payloads, confirms previously created IDs through GET, skips only those proven importer-created rows, and stops again on any later write failure. Do not use `--resume` with an arbitrary or edited report.
 
 ## API notes
 
